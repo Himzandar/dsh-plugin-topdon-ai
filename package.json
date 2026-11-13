@@ -1,0 +1,44 @@
+{
+  "name": "dsh-plugin-topdon-ai",
+  "version": "1.14.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "description": "Topdon AI gateway: one bundle-layer provider with 18 models, a dedicated Settings section for model and API-key management, and multi-key failover.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./providers": "./providers.mjs",
+    "./patchgen": "./patchgen.mjs",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "providers.mjs",
+    "keypool.mjs",
+    "pool.mjs",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build-patch.mjs",
+    "test": "node test-injector.mjs && node test-pool.mjs && node test-client.mjs && node test-selection.mjs && node test-announce.mjs && node test-rowlock.mjs && node test-usage.mjs",
+    "pool": "node pool.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  }
+}
