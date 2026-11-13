@@ -48,9 +48,17 @@ export const MODELS_ROUTE = '/plugins/dsh-plugin-topdon-ai/models'
 /** Route that checks for a newer version on GitHub. */
 export const UPDATE_ROUTE = '/plugins/dsh-plugin-topdon-ai/update-check'
 
-/** GitHub raw URL for the upstream package.json (the single source of truth for version). */
+/** GitHub raw URL — fallback when the contents API is unreachable. */
 const UPSTREAM_PKG_URL =
   'https://raw.githubusercontent.com/Himzandar/dsh-plugin-topdon-ai/main/package.json'
+/**
+ * GitHub contents API for the same file, read as the primary source.
+ *
+ * The raw host is CDN-cached, so a version pushed a moment ago can still read
+ * as the old one. The API reads the live object instead.
+ */
+const UPSTREAM_API_URL =
+  'https://api.github.com/repos/Himzandar/dsh-plugin-topdon-ai/contents/package.json'
 /** How long to cache a successful update check (ms). */
 const UPDATE_CACHE_MS = 4 * 60 * 60 * 1000 // 4 h
 let _updateCache = { checkedAt: 0, result: undefined }
@@ -484,15 +492,39 @@ async function checkForUpdate() {
   const local = require('./package.json').version
   let upstream
   try {
-    const res = await fetch(UPSTREAM_PKG_URL, {
-      headers: { 'User-Agent': `dsh-plugin-topdon-ai/${local}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout?.(10_000),
-    })
-    if (!res.ok) return { current: local, error: `HTTP ${res.status}` }
-    const json = await res.json()
+    // GitHub API first, raw second.
+    //
+    // `raw.githubusercontent.com` is served through a CDN that can keep a
+    // previous version for minutes after a push, which makes a fresh release
+    // look "already up to date". The contents API reads the live git object.
+    // It is anonymous-capable for a public repo (60 requests/hour is ample for
+    // a 4-hour cache), and the raw URL stays as a fallback for deployments that
+    // block api.github.com.
+    const headers = {
+      'User-Agent': `dsh-plugin-topdon-ai/${local}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    }
+    const signal = AbortSignal.timeout?.(10_000)
+    let json
+    try {
+      const api = await fetch(UPSTREAM_API_URL, { headers, signal })
+      if (api.ok) json = JSON.parse(Buffer.from((await api.json()).content, 'base64').toString('utf8'))
+    } catch {}
+    if (json === undefined) {
+      const raw = await fetch(UPSTREAM_PKG_URL, {
+        headers: { 'User-Agent': `dsh-plugin-topdon-ai/${local}`, Accept: 'application/json' },
+        signal,
+      })
+      if (!raw.ok) return { current: local, error: `HTTP ${raw.status}` }
+      json = await raw.json()
+    }
     upstream = json.version
   } catch (error) {
     return { current: local, error: String(error?.message ?? error) }
+  }
+  if (typeof upstream !== 'string' || upstream.length === 0) {
+    return { current: local, error: 'upstream package.json has no version' }
   }
   const result = { current: local, latest: upstream, hasUpdate: upstream !== local }
   _updateCache = { checkedAt: now, result }
