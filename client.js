@@ -971,8 +971,20 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
      * with a stateful useState double; the host always passes nothing and the
      * module-level `react` above is used.
      */
-    function UpdateBanner(props, reactImpl) {
-      const R = reactImpl ?? react
+    /**
+     * IMPORTANT: exactly ONE parameter.
+     *
+     * React 18 invokes a function component as `Component(props, context)` —
+     * the second argument is the LEGACY CONTEXT object, which is an empty
+     * object when no legacy contexts are present, NOT `undefined`. An earlier
+     * version added a second `reactImpl` parameter for the offline tests and
+     * did `const R = reactImpl ?? react`; `{}` is not nullish, so `R` became
+     * `{}`, `R.useState` was not a function, and the whole Settings section
+     * rendered blank. The tests seed the module-level `react` double instead,
+     * so no second parameter is needed.
+     */
+    function UpdateBanner(props) {
+      const R = react
       const t = props?.t ?? ((key) => key)
       // check status: idle | checking | up-to-date | update | error
       const [status, setStatus] = R.useState('idle')
