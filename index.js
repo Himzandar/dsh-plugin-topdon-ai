@@ -18,6 +18,7 @@
  * 5. ROUTE    `/plugins/dsh-plugin-topdon-ai/pool` backs the in-app cards.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildProvider, MODELS, MODEL_IDS, OWNED, PROVIDER_ID, stable } from './providers.mjs'
@@ -44,6 +45,15 @@ export const CREDENTIAL_REF = 'TOPDON_AI_API_KEY'
 export const POOL_ROUTE = '/plugins/dsh-plugin-topdon-ai/pool'
 /** Route backing the model selection card. */
 export const MODELS_ROUTE = '/plugins/dsh-plugin-topdon-ai/models'
+/** Route that checks for a newer version on GitHub. */
+export const UPDATE_ROUTE = '/plugins/dsh-plugin-topdon-ai/update-check'
+
+/** GitHub raw URL for the upstream package.json (the single source of truth for version). */
+const UPSTREAM_PKG_URL =
+  'https://raw.githubusercontent.com/Himzandar/dsh-plugin-topdon-ai/main/package.json'
+/** How long to cache a successful update check (ms). */
+const UPDATE_CACHE_MS = 4 * 60 * 60 * 1000 // 4 h
+let _updateCache = { checkedAt: 0, result: undefined }
 
 const ENTRY_ID = 'llm-pi-ai'
 const RETRY = Symbol('topdon-ai-pool-retry')
@@ -457,6 +467,37 @@ export function applyPoolAction(store, body) {
   }
   throw new Error(`未知操作：${action}`)
 }
+/**
+ * Check whether a newer version is available on GitHub.
+ *
+ * Returns `{ current, latest, hasUpdate }`. Caches the result for 4 h so the
+ * settings card can call this route on every open without hammering GitHub.
+ * Errors (network down, rate-limited, private repo) return `{ error }` and
+ * the card shows nothing — a failed check is not surfaced as a warning.
+ */
+async function checkForUpdate() {
+  const now = Date.now()
+  if (_updateCache.result !== undefined && now - _updateCache.checkedAt < UPDATE_CACHE_MS) {
+    return _updateCache.result
+  }
+  const require = createRequire(import.meta.url)
+  const local = require('./package.json').version
+  let upstream
+  try {
+    const res = await fetch(UPSTREAM_PKG_URL, {
+      headers: { 'User-Agent': `dsh-plugin-topdon-ai/${local}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout?.(10_000),
+    })
+    if (!res.ok) return { current: local, error: `HTTP ${res.status}` }
+    const json = await res.json()
+    upstream = json.version
+  } catch (error) {
+    return { current: local, error: String(error?.message ?? error) }
+  }
+  const result = { current: local, latest: upstream, hasUpdate: upstream !== local }
+  _updateCache = { checkedAt: now, result }
+  return result
+}
 
 /** Register one exact-path JSON route on the host webserver. */
 function registerRoute(ctx, path, handler) {
@@ -528,9 +569,6 @@ export function apply(ctx, config = {}) {
           provider: PROVIDER_ID,
           models: currentSelection(),
           catalog: MODEL_IDS,
-          // Display names the picker renders. The browser half uses them as a
-          // last-resort way to tell whether the selected model is ours, so it can
-          // hide the key chip while another provider serves the turn.
           names: MODELS.map((model) => model.name),
         })
       }
@@ -549,6 +587,11 @@ export function apply(ctx, config = {}) {
         models: currentSelection(),
         catalog: MODEL_IDS,
       })
+    })
+
+    registerRoute(ctx, UPDATE_ROUTE, async (req, res) => {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' })
+      return sendJson(res, 200, await checkForUpdate())
     })
   }
 
