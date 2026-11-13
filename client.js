@@ -12,6 +12,7 @@ window.__ModuleLoader__.load({
     const POOL_ROUTE = '/plugins/dsh-plugin-topdon-ai/pool'
     const MODELS_ROUTE = '/plugins/dsh-plugin-topdon-ai/models'
     const UPDATE_ROUTE = '/plugins/dsh-plugin-topdon-ai/update-check'
+    const UPDATE_INSTALL_ROUTE = '/plugins/dsh-plugin-topdon-ai/do-update'
     const GITHUB_REPO = 'https://github.com/Himzandar/dsh-plugin-topdon-ai'
     /** Settings section id; the icon registration reuses it. */
     const SECTION_ID = 'topdon-ai'
@@ -70,10 +71,14 @@ window.__ModuleLoader__.load({
       'update.checking': '正在检查更新…',
       'update.latest': '已是最新版本 {v}',
       'update.available': '发现新版本 {latest}（当前 {current}）',
-      'update.how': '同事只需在插件页「更新」即可。',
+      'update.how': '点击「立即更新」可自动拉取最新版本。',
       'update.repo': '查看仓库',
       'update.error': '检查更新失败',
       'update.recheck': '重新检查',
+      'update.install': '立即更新',
+      'update.installing': '更新中…',
+      'update.installOk': '更新完成，请刷新页面后生效。',
+      'update.installError': '更新失败：{msg}',
       'modelsPage.failed': '没能自动打开设置，请手动进入 设置 → Topdon AI。',
     }
 
@@ -123,10 +128,14 @@ window.__ModuleLoader__.load({
       'update.checking': 'Checking for updates…',
       'update.latest': 'Up to date ({v})',
       'update.available': 'New version {latest} available (current {current})',
-      'update.how': 'Colleagues can click Update in the Plugins page.',
+      'update.how': 'Click "Update now" to pull the latest version.',
       'update.repo': 'View repo',
       'update.error': 'Update check failed',
       'update.recheck': 'Check again',
+      'update.install': 'Update now',
+      'update.installing': 'Updating…',
+      'update.installOk': 'Updated — refresh the page to apply.',
+      'update.installError': 'Update failed: {msg}',
       'modelsPage.failed': 'Could not open Settings automatically — go to Settings → Topdon AI.',
     }
 
@@ -957,13 +966,23 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
     }
 
     // --- update check banner --------------------------------------------------
-    function UpdateBanner(props) {
+    /**
+     * `react` is a parameter only so the offline checks can drive this component
+     * with a stateful useState double; the host always passes nothing and the
+     * module-level `react` above is used.
+     */
+    function UpdateBanner(props, reactImpl) {
+      const R = reactImpl ?? react
       const t = props?.t ?? ((key) => key)
-      const [status, setStatus] = react.useState('idle')   // idle | checking | up-to-date | update | error
-      const [info, setInfo] = react.useState(null)
-      const [nonce, setNonce] = react.useState(0)
+      // check status: idle | checking | up-to-date | update | error
+      const [status, setStatus] = R.useState('idle')
+      const [info, setInfo] = R.useState(null)
+      const [nonce, setNonce] = R.useState(0)
+      // install status: idle | installing | done | error
+      const [installStatus, setInstallStatus] = R.useState('idle')
+      const [installMsg, setInstallMsg] = R.useState('')
 
-      react.useEffect(() => {
+      R.useEffect(() => {
         let alive = true
         setStatus('checking')
         // `force=1` bypasses the host's 4h cache; this runs on mount AND on an
@@ -985,13 +1004,32 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
         return s
       }
 
+      const doInstall = async () => {
+        if (installStatus === 'installing') return
+        setInstallStatus('installing')
+        setInstallMsg('')
+        try {
+          const result = await request(UPDATE_INSTALL_ROUTE, 'POST')
+          if (result.ok) {
+            setInstallStatus('done')
+            setInstallMsg(result.message || t('update.installOk'))
+          } else {
+            setInstallStatus('error')
+            setInstallMsg(fill('update.installError', { msg: result.message || '未知错误' }))
+          }
+        } catch (err) {
+          setInstallStatus('error')
+          setInstallMsg(fill('update.installError', { msg: String(err?.message ?? err) }))
+        }
+      }
+
       const baseStyle = { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', marginTop: '4px' }
       const recheck = (label) =>
         e(
           'button',
           {
             type: 'button',
-            onClick: () => setNonce((value) => value + 1),
+            onClick: () => { setNonce((value) => value + 1); setInstallStatus('idle'); setInstallMsg('') },
             style: {
               appearance: 'none',
               border: '0',
@@ -1005,6 +1043,30 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
             },
           },
           label,
+        )
+
+      const installButton = () =>
+        e(
+          'button',
+          {
+            type: 'button',
+            disabled: installStatus === 'installing',
+            onClick: () => void doInstall(),
+            style: {
+              appearance: 'none',
+              padding: '3px 10px',
+              borderRadius: '5px',
+              border: `1px solid ${THEME.accent}`,
+              background: THEME.accent,
+              color: '#fff',
+              font: 'inherit',
+              fontSize: '12px',
+              cursor: installStatus === 'installing' ? 'default' : 'pointer',
+              whiteSpace: 'nowrap',
+              opacity: installStatus === 'installing' ? 0.6 : 1,
+            },
+          },
+          installStatus === 'installing' ? t('update.installing') : t('update.install'),
         )
 
       if (status === 'idle' || status === 'checking') {
@@ -1024,29 +1086,53 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
         {
           style: {
             ...baseStyle,
-            flexWrap: 'wrap',
-            padding: '6px 10px',
+            flexDirection: 'column',
+            alignItems: 'flex-start',
+            gap: '6px',
+            padding: '8px 10px',
             borderRadius: '7px',
             background: THEME.hover,
             border: `1px solid ${THEME.accent}44`,
             color: THEME.labelPrimary,
           },
         },
-        e('span', { style: { flex: '1 1 auto' } },
-          fill('update.available', { latest: info.latest, current: info.current }),
-          ' ',
-          e('span', { style: { color: THEME.labelTertiary } }, t('update.how')),
-        ),
+        // top row: version info + action buttons
         e(
-          'a',
-          {
-            href: GITHUB_REPO,
-            target: '_blank',
-            rel: 'noopener noreferrer',
-            style: { color: THEME.accent, textDecoration: 'none', whiteSpace: 'nowrap' },
-          },
-          t('update.repo'),
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', width: '100%' } },
+          e('span', { style: { flex: '1 1 auto' } },
+            fill('update.available', { latest: info.latest, current: info.current }),
+          ),
+          e(
+            'a',
+            {
+              href: GITHUB_REPO,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              style: { color: THEME.accent, textDecoration: 'none', whiteSpace: 'nowrap', fontSize: '12px' },
+            },
+            t('update.repo'),
+          ),
+          installStatus !== 'done' ? installButton() : null,
         ),
+        // hint text
+        installStatus === 'idle' || installStatus === 'installing'
+          ? e('span', { style: { color: THEME.labelTertiary, fontSize: '11px' } }, t('update.how'))
+          : null,
+        // install result message
+        installMsg.length > 0
+          ? e(
+              'div',
+              {
+                style: {
+                  fontSize: '12px',
+                  color: installStatus === 'done' ? 'var(--dsw-alias-state-business-primary, #3fb950)' : 'var(--dsw-alias-state-error-primary, #e5534b)',
+                  marginTop: '2px',
+                },
+              },
+              installMsg,
+            )
+          : null,
       )
     }
 
@@ -1192,6 +1278,8 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
     // wrong answer here is invisible in review but obvious on screen.
     exports.currentProviderForTest = currentProvider
     exports.shortNumberForTest = shortNumber
+    /** The banner, so the offline checks can drive its state machine. */
+    exports.UpdateBannerForTest = UpdateBanner
     exports.name = 'dsh-plugin-topdon-ai'
     return module.exports
   },
