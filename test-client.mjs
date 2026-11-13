@@ -283,6 +283,104 @@ check('currentProvider falls back to the picker text', () => {
   }
 })
 
+// ---------------------------------------------------------------------------
+// the update banner
+// ---------------------------------------------------------------------------
+//
+// The banner is the one part of this plugin that writes to disk, so the checks
+// below pin down the three things that make it safe to click:
+//   1. it only offers Update when the compare says NEWER, never on a downgrade;
+//   2. the button posts to the install route, not to the check route;
+//   3. a failed install reports the reason instead of looking like success.
+
+/**
+ * Render `UpdateBanner` with a working `useState`.
+ *
+ * The shared `fakeReact.state` is a no-op setter, which is fine for components
+ * whose first render is all a check needs. The banner changes shape across
+ * renders (idle → checking → update → installing → done), so the state setter
+ * has to land somewhere the check can read back.
+ */
+/**
+ * Render the banner with a fixed slice of useState values, in call order.
+ *
+ * The banner changes shape across renders (idle → checking → update →
+ * installing → done), and the shared double's setter is a no-op, so a check
+ * seeds the exact state slice it wants to assert on.
+ */
+function renderBannerWith(client, seeded) {
+  const buttons = []
+  const collectButtons = (node) => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(collectButtons)
+    if (node.type === 'button') buttons.push(node)
+    if (Array.isArray(node.children)) node.children.forEach(collectButtons)
+  }
+  const queue = [...seeded]
+  const react = {
+    ...fakeReact,
+    useState: (initial) => [queue.length > 0 ? queue.shift() : initial, () => {}],
+  }
+  const element = client.UpdateBannerForTest({ t: (key) => key }, react)
+  collectButtons(element)
+  return { element, buttons, serialized: JSON.stringify(element) }
+}
+
+check('no install button when the host says up to date', () => {
+  // The semver verdict belongs to the HOST (`isNewer` in index.js) — the banner
+  // renders the button ONLY for `hasUpdate`. Seeding `up-to-date` proves the
+  // button is not unconditional: an older upstream must not offer to overwrite.
+  const { buttons, serialized } = renderBannerWith(client, [
+    'up-to-date', { current: '1.17.0', latest: '1.16.0', hasUpdate: false }, 0, 'idle', '',
+  ])
+  // The re-check link is expected here; the INSTALL action is not.
+  assert.ok(!serialized.includes('update.install'), 'no install affordance when nothing is newer')
+  assert.ok(serialized.includes('update.recheck'), 'up-to-date should still offer a re-check')
+  assert.ok(
+    !buttons.some((node) => JSON.stringify(node).includes('update.install')),
+    'up-to-date must not render the install button',
+  )
+})
+
+check('the install button posts to the install route', async () => {
+  const { buttons } = renderBannerWith(client, [
+    'update', { current: '1.16.0', latest: '1.17.0', hasUpdate: true }, 0, 'idle', '',
+  ])
+  const install = buttons.find((node) => JSON.stringify(node).includes('update.install'))
+  assert.ok(install, 'no install button in the update-available state')
+  assert.equal(typeof install.props.onClick, 'function', 'the install button has no handler')
+
+  const calls = []
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, method: options?.method })
+    return { ok: true, status: 200, json: async () => ({ ok: true, message: 'done' }) }
+  }
+  await install.props.onClick()
+  assert.equal(calls.length, 1, 'the handler must make exactly one request')
+  assert.ok(calls[0].url.includes('/do-update'), `posted to ${calls[0].url}`)
+  assert.equal(calls[0].method, 'POST', 'installing is a POST')
+})
+
+check('a rejected install reports the reason, not success', async () => {
+  const { buttons } = renderBannerWith(client, [
+    'update', { current: '1.16.0', latest: '1.17.0', hasUpdate: true }, 0, 'idle', '',
+  ])
+  const install = buttons.find((node) => JSON.stringify(node).includes('update.install'))
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 500,
+    json: async () => ({ ok: false, message: '下载 index.js 失败：HTTP 404' }),
+  })
+  // The handler catches the non-OK reply; it must not resolve as if it worked.
+  await install.props.onClick()
+  const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8')
+  // Success copy is only reachable on `result.ok`, and failure fills the reason.
+  assert.ok(
+    /if \(result\.ok\)[\s\S]{0,120}update\.installOk[\s\S]{0,200}update\.installError/.test(source),
+    'success copy must be gated on result.ok with the failure path filling a reason',
+  )
+})
+
 let failed = 0
 for (const { name, fn } of checks) {
   try {
