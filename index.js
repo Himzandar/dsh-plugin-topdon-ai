@@ -17,8 +17,9 @@
  *             on the next usable key.
  * 5. ROUTE    `/plugins/dsh-plugin-topdon-ai/pool` backs the in-app cards.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildProvider, MODELS, MODEL_IDS, OWNED, PROVIDER_ID, stable } from './providers.mjs'
@@ -114,23 +115,61 @@ function findRow(editor) {
 //
 // HOW THE SELECTION IS APPLIED
 // ----------------------------
-// The first attempt wrote the narrowed provider through `entry.update()`, hoping
-// `providers` being a VOLATILE field would commit it into the running fiber. A
-// diagnostic run under the real loader showed `update()` resolving while
-// `loader/volatile-update` never fired, and the surrounding entry restarting —
-// so the adapter never saw the new list and the Models page never re-read it.
+// Two things have to agree: what survives a restart, and what the running
+// `llm-pi-ai` fiber exposes right now.
 //
-// The selection is therefore written where the provider already lives: this
-// plugin's OWN bundle patch (`cordis.patch.yml`). That file is the plugin's, not
-// the profile's user layer, so uninstalling still removes the models with the
-// plugin. The entry is then reloaded so `llm-pi-ai` re-resolves its providers
-// and re-registers the adapter — which is what makes both the picker and the
-// Models page agree with the card.
+// `entry.update()` alone was the first attempt; under the real loader the call
+// resolved while `loader/volatile-update` never fired, so the adapter kept the
+// catalogue it composed at boot.
+//
+// The selection therefore used to be written into this plugin's OWN bundle
+// patch, which worked because the package was always a writable LINK. A
+// tarball/registry install makes that unsafe (see `selectionPath`), so the
+// durable copy now lives outside the package and the live fibre is still
+// refreshed through `reloadLlmEntry` + the `llm/models-updated` announcement.
+// The bundle patch keeps declaring the FULL catalogue and is only rewritten
+// when its bytes are private to this install.
 
 const PATCH_FILE = join(dirname(fileURLToPath(import.meta.url)), 'cordis.patch.yml')
 
-/** Read the selection currently published by this plugin's own patch file. */
-export function currentSelection(file = PATCH_FILE) {
+/** Full-catalog tarball the installer-based update path hands to pnpm. */
+const MAIN_TARBALL_URL = 'https://github.com/Himzandar/dsh-plugin-topdon-ai/archive/refs/heads/main.tar.gz'
+
+/**
+ * `$DSH_HOME/.topdon-ai-selection.json` — where the user's model choice lives.
+ *
+ * WHY NOT IN THE BUNDLE PATCH ANY MORE
+ * ------------------------------------
+ * The patch inside the installed package was a convenient place to keep the
+ * selection while this plugin was only ever installed as a LINK to a working
+ * copy. A registry/tarball install changes that: pnpm materializes the package
+ * as HARD LINKS into its content-addressed store, so `writeFileSync` on any
+ * file there rewrites the SHARED STORE BLOB (verified: a write through the
+ * package path is visible through the store path). That would corrupt every
+ * other project resolving the same bytes, and defeat pnpm's integrity check.
+ *
+ * The key pool already stores its state outside the package for the same
+ * reason; the selection now follows it.
+ */
+export function selectionPath() {
+  const home = process.env.DSH_HOME && process.env.DSH_HOME.length > 0 ? process.env.DSH_HOME : join(homedir(), '.dsh')
+  return join(home, '.topdon-ai-selection.json')
+}
+
+/**
+ * True when `file` has more than one link, i.e. writing it in place would
+ * change bytes somebody else owns — a pnpm store blob in a registry install.
+ */
+export function sharesItsBytes(file) {
+  try {
+    return statSync(file).nlink > 1
+  } catch {
+    return false
+  }
+}
+
+/** Read the selection declared by an explicit bundle patch (dev installs). */
+export function readSelectionFromPatch(file = PATCH_FILE) {
   let text
   try {
     text = readFileSync(file, 'utf8')
@@ -146,21 +185,55 @@ export function currentSelection(file = PATCH_FILE) {
   return known.length > 0 ? known : [...MODEL_IDS]
 }
 
+/** The selection saved outside the package, or `undefined` when none is saved. */
+export function readSavedSelection(stateFile = selectionPath()) {
+  try {
+    const raw = JSON.parse(readFileSync(stateFile, 'utf8'))
+    const ids = Array.isArray(raw?.models) ? raw.models.filter((id) => MODEL_IDS.includes(id)) : []
+    return ids.length > 0 ? ids : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Persist the selection outside the package. Returns whether it landed. */
+function writeSavedSelection(ids, stateFile) {
+  try {
+    const dir = dirname(stateFile)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    writeFileSync(stateFile, JSON.stringify({ models: ids }, null, 2) + '\n', 'utf8')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The effective selection: the saved choice, else what the patch declares. */
+export function currentSelection(patchFile = PATCH_FILE, stateFile = selectionPath()) {
+  const saved = readSavedSelection(stateFile)
+  if (saved !== undefined) return saved
+  return readSelectionFromPatch(patchFile)
+}
+
 /**
- * Publish a new selection by rewriting this plugin's own bundle patch.
+ * Record a new selection and publish it where it is safe to publish.
  *
- * The file is the part that survives: it is what a boot composes and what the
- * Models page reads back through `settings/describe`. A save that only touched
- * memory left the page and the next boot showing the old list, which is exactly
- * the desync this function removes.
+ * The save is complete once the state file holds it. The bundle patch is only
+ * rewritten when its bytes belong to this install alone (`nlink === 1`), which
+ * is the dev/link case; a store-managed patch is left untouched so pnpm's
+ * shared blob keeps its integrity, and the runtime narrowing is applied through
+ * `reloadLlmEntry` instead.
  *
  * @returns the effective selection (unknown ids dropped, empty falls back to all)
  */
-export function writeSelection(selectedIds, file = PATCH_FILE) {
+export function writeSelection(selectedIds, patchFile = PATCH_FILE, stateFile = selectionPath()) {
   const wanted = new Set(Array.isArray(selectedIds) ? selectedIds : [])
   const effective = MODEL_IDS.filter((id) => wanted.has(id))
   const chosen = effective.length > 0 ? effective : [...MODEL_IDS]
-  writeFileSync(file, buildPatchText(chosen), 'utf8')
+  writeSavedSelection(chosen, stateFile)
+  if (!sharesItsBytes(patchFile)) {
+    writeFileSync(patchFile, buildPatchText(chosen), 'utf8')
+  }
   return chosen
 }
 
@@ -589,11 +662,57 @@ export function isNewer(a, b) {
  * @returns `{ ok, message, version?, reload? }`
  */
 async function installUpdate(ctx) {
-  if (_installing) return { ok: false, message: '正在更新中，请稍候…' }
-  _installing = true
   const require = createRequire(import.meta.url)
   const local = require('./package.json').version
   const installDir = dirname(fileURLToPath(import.meta.url))
+
+  /**
+   * HOW THIS PACKAGE IS INSTALLED DECIDES HOW IT MAY BE UPDATED.
+   *
+   * LINK install (a working copy the profile points at): the bytes belong to
+   * the developer, so overwriting them in place is exactly right — that is what
+   * this plugin has always done, and it keeps the link intact.
+   *
+   * STORE install (tarball/registry): the files are hard links into pnpm's
+   * content-addressed store. Writing them rewrites SHARED blobs and breaks the
+   * store's integrity for every other project resolving the same bytes, so the
+   * only correct path is to let DSH's own package manager replace the package.
+   * `installBundle` runs pnpm, restores package.json/lockfile on failure, and
+   * re-activates the bundle — doing that by hand here would be strictly worse.
+   */
+  const storeManaged =
+    sharesItsBytes(join(installDir, 'index.js')) || sharesItsBytes(join(installDir, 'package.json'))
+
+  if (storeManaged) {
+    const manager = ctx.get?.('pluginManager')
+    if (manager === undefined || typeof manager.installBundle !== 'function') {
+      return {
+        ok: false,
+        mode: 'manual',
+        message: '当前是安装包方式安装，无法就地覆盖文件。请到「设置 → 插件」更新。',
+      }
+    }
+    // The install replaces this very fibre, so the response has to leave first:
+    // answering and THEN handing the package to pnpm keeps the caller informed.
+    setTimeout(() => {
+      Promise.resolve()
+        .then(() => manager.installBundle(MAIN_TARBALL_URL, { enabled: true }))
+        .then((result) => {
+          ctx.logger?.debug?.(`topdon-ai: installer update -> ${result?.application ?? 'unknown'}`)
+        })
+        .catch((error) => {
+          ctx.logger?.warn?.(`topdon-ai: installer update failed: ${error}`)
+        })
+    }, 600)
+    return {
+      ok: true,
+      mode: 'installer',
+      message: '正在通过 DSH 安装器更新，几秒后请刷新页面。',
+    }
+  }
+
+  if (_installing) return { ok: false, message: '正在更新中，请稍候…' }
+  _installing = true
   const ua = `dsh-plugin-topdon-ai/${local}`
   const rawHeaders = { 'User-Agent': ua }
 
@@ -688,7 +807,12 @@ async function installUpdate(ctx) {
       if (typeof generated !== 'string' || generated.length === 0) {
         throw new Error('could not regenerate cordis.patch.yml')
       }
-      writeFileSync(join(installDir, 'cordis.patch.yml'), generated, 'utf8')
+      // Same guard as `writeSelection`: never rewrite a shared store blob.
+      if (!sharesItsBytes(join(installDir, 'cordis.patch.yml'))) {
+        writeFileSync(join(installDir, 'cordis.patch.yml'), generated, 'utf8')
+      }
+      // Keep the durable copy in step with the catalogue just installed.
+      writeSavedSelection(wanted, selectionPath())
     } catch (patchError) {
       // Keep whatever upstream shipped rather than leaving a stale local patch.
       const shipped = staged.get('cordis.patch.yml')
@@ -792,6 +916,30 @@ export function apply(ctx, config = {}) {
   }
 
   timer = setTimeout(sync, 300)
+
+  /**
+   * Re-apply the saved model choice at boot.
+   *
+   * The bundle patch always declares the full catalogue, so a narrowed choice
+   * exists at runtime only after it is pushed into the live `llm-pi-ai` entry.
+   * This retries like the healer above: the entry may still be resolving on the
+   * first tick.
+   */
+  const applySavedSelection = async (tries = 0) => {
+    if (disposed || !modelsEnabled) return
+    try {
+      const saved = readSavedSelection()
+      if (saved === undefined || saved.length === MODEL_IDS.length) return
+      await reloadLlmEntry(editor, saved)
+      announceModelsChanged(ctx)
+      ctx.logger?.debug?.(`topdon-ai: applied the saved model selection (${saved.length} of ${MODEL_IDS.length})`)
+    } catch (error) {
+      if (tries < 8 && !disposed) setTimeout(() => void applySavedSelection(tries + 1), 1000)
+      else ctx.logger?.debug?.(`topdon-ai: could not apply the saved selection: ${error}`)
+    }
+  }
+
+  if (modelsEnabled) setTimeout(() => void applySavedSelection(), 600)
 
   let store
   // `inject`/`effect` are plugin-context services; a bare test double skips the
