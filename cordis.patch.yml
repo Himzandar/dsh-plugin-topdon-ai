@@ -19,6 +19,36 @@
         defaultContextWindow: 1000000
         defaultMaxTokens: 32768
         models:
+          - id: deepseek-v4-flash
+            name: 'DeepSeek V4 Flash'
+            input:
+              - text
+            contextWindow: 131072
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: deepseek-chat_thinking
+            name: 'DeepSeek Chat (Thinking)'
+            input:
+              - text
+            contextWindow: 131072
+            maxTokens: 32768
+          - id: deepseek-reasoner
+            name: 'DeepSeek Reasoner'
+            input:
+              - text
+            contextWindow: 131072
+            maxTokens: 32768
+          - id: claude-sonnet-4.6_image_thinking
+            name: 'Claude Sonnet 4.6 (Vision + Thinking)'
+            input:
+              - text
+              - image
+            contextWindow: 200000
+            maxTokens: 32768
+            reasoningEfforts:
+              off: null
+              high: high
+              max: max
           - id: claude-opus-5-5
             name: 'Claude Opus 5.5'
             input:
@@ -26,6 +56,28 @@
             contextWindow: 200000
             maxTokens: 32768
             reasoningEfforts: false
+          - id: claude-opus-4-8_image_thinking
+            name: 'Claude Opus 4.8 (Vision + Thinking)'
+            input:
+              - text
+              - image
+            contextWindow: 200000
+            maxTokens: 32768
+            reasoningEfforts:
+              off: null
+              high: high
+              max: max
+          - id: claude-haiku-4.5_image_thinking
+            name: 'Claude Haiku 4.5 (Vision + Thinking)'
+            input:
+              - text
+              - image
+            contextWindow: 200000
+            maxTokens: 32768
+            reasoningEfforts:
+              off: null
+              high: high
+              max: max
           - id: gpt-6.1-sol
             name: 'GPT 6.1 Sol'
             input:
@@ -33,6 +85,62 @@
             contextWindow: 1000000
             maxTokens: 32768
             reasoningEfforts: false
+          - id: gpt-5.6-sol
+            name: 'GPT 5.6 Sol'
+            input:
+              - text
+            contextWindow: 1000000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gpt-5.6-luna
+            name: 'GPT 5.6 Luna'
+            input:
+              - text
+            contextWindow: 1000000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gpt-5.4_image
+            name: 'GPT 5.4 (Vision)'
+            input:
+              - text
+              - image
+            contextWindow: 1000000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gpt-5.6_image
+            name: 'GPT 5.6 (Vision)'
+            input:
+              - text
+              - image
+            contextWindow: 1000000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gpt-5.2-codex
+            name: 'GPT 5.2 Codex'
+            input:
+              - text
+            contextWindow: 1000000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gpt-3.5-turbo
+            name: 'GPT 3.5 Turbo'
+            input:
+              - text
+            contextWindow: 16384
+            maxTokens: 4096
+            reasoningEfforts: false
+          - id: qwen-plus_thinking
+            name: 'Qwen Plus (Thinking)'
+            input:
+              - text
+            contextWindow: 131072
+            maxTokens: 32768
+          - id: qwen-flash_thinking
+            name: 'Qwen Flash (Thinking)'
+            input:
+              - text
+            contextWindow: 131072
+            maxTokens: 32768
           - id: gemini-3.1_image_thinking
             name: 'Gemini 3.1 Flash (Vision + Thinking)'
             input:
@@ -40,6 +148,14 @@
               - image
             contextWindow: 1000000
             maxTokens: 32768
+          - id: gemini-nanobanana-3_image
+            name: 'Gemini Nano 3 (Vision)'
+            input:
+              - text
+              - image
+            contextWindow: 131072
+            maxTokens: 32768
+            reasoningEfforts: false
 
 # Clear a shadowing override and apply the saved model selection.
 - insert:
