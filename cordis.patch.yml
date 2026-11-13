@@ -1,0 +1,51 @@
+# GENERATED FILE — do not edit. Run: node build-patch.mjs
+#
+# The provider lives in the plugin BUNDLE's patch layer, never in the profile's
+# user layer. Installing/enabling the plugin publishes it; uninstalling or
+# disabling it removes the layer and the model goes with it.
+#
+# The injector below carries no provider data. It (a) deletes a user-layer
+# `llm-pi-ai` override that shadows this layer, and (b) applies the model
+# selection saved from this plugin's settings card.
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      topdon:
+        displayName: 'Topdon AI'
+        api: anthropic-messages
+        baseURL: 'https://plat.topdon.com/topdon-plat/topdon-ai/anthropic'
+        apiKeyEnv: TOPDON_AI_API_KEY
+        defaultContextWindow: 1000000
+        defaultMaxTokens: 32768
+        models:
+          - id: claude-opus-5-5
+            name: 'Claude Opus 5.5'
+            input:
+              - text
+            contextWindow: 200000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gpt-6.1-sol
+            name: 'GPT 6.1 Sol'
+            input:
+              - text
+            contextWindow: 1000000
+            maxTokens: 32768
+            reasoningEfforts: false
+          - id: gemini-3.1_image_thinking
+            name: 'Gemini 3.1 Flash (Vision + Thinking)'
+            input:
+              - text
+              - image
+            contextWindow: 1000000
+            maxTokens: 32768
+
+# Clear a shadowing override and apply the saved model selection.
+- insert:
+    - id: topdon-ai-injector
+      name: dsh-plugin-topdon-ai
+      config:
+        heal: true
+        pool: true
+        models: true
