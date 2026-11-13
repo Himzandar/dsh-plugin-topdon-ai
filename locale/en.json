@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Topdon AI Gateway",
+    "description": "Company Anthropic-compatible gateway: one provider carrying 18 models, with multi-key failover."
+  }
+}
