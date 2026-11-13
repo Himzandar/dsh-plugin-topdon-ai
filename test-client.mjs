@@ -304,9 +304,11 @@ check('currentProvider falls back to the picker text', () => {
 /**
  * Render the banner with a fixed slice of useState values, in call order.
  *
- * The banner changes shape across renders (idle → checking → update →
- * installing → done), and the shared double's setter is a no-op, so a check
- * seeds the exact state slice it wants to assert on.
+ * The banner uses the module-level `react` reference (which is `fakeReact`
+ * in the test environment, because `require('react')` returns it). We seed a
+ * specific state branch by temporarily replacing `fakeReact.useState` with a
+ * queue-drain function, then restoring it after the render. This matches how
+ * the production code runs: React calls the component, which calls useState.
  */
 function renderBannerWith(client, seeded) {
   const buttons = []
@@ -317,11 +319,14 @@ function renderBannerWith(client, seeded) {
     if (Array.isArray(node.children)) node.children.forEach(collectButtons)
   }
   const queue = [...seeded]
-  const react = {
-    ...fakeReact,
-    useState: (initial) => [queue.length > 0 ? queue.shift() : initial, () => {}],
+  const savedUseState = fakeReact.useState
+  fakeReact.useState = (initial) => [queue.length > 0 ? queue.shift() : initial, () => {}]
+  let element
+  try {
+    element = client.UpdateBannerForTest({ t: (key) => key })
+  } finally {
+    fakeReact.useState = savedUseState
   }
-  const element = client.UpdateBannerForTest({ t: (key) => key }, react)
   collectButtons(element)
   return { element, buttons, serialized: JSON.stringify(element) }
 }
