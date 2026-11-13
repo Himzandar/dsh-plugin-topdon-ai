@@ -4,6 +4,31 @@
 发布成**一个**提供商、18 个模型，并在**设置 → Topdon AI** 里提供独立的模型选择与
 API Key 池管理页面。
 
+仓库：<https://github.com/Himzandar/dsh-plugin-topdon-ai>
+
+## 给同事安装
+
+在插件页「添加插件」里填**仓库地址**，之后有新版本在插件页点「更新」即可，不用再传包：
+
+```
+https://github.com/Himzandar/dsh-plugin-topdon-ai
+```
+
+安装后到 **设置 → Topdon AI** 填入自己的 API Key（Key 只存在各人本机）。
+
+插件会自己检查上游版本，有新版本时在设置页底部提示。
+
+## 发布新版本
+
+改完代码后：
+
+1. 改 `package.json` 的 `version`
+2. `node build-patch.mjs`（模型清单变了才需要）
+3. 跑测试：`node test-injector.mjs && node test-pool.mjs && node test-client.mjs && node test-selection.mjs && node test-announce.mjs && node test-rowlock.mjs && node test-usage.mjs`
+4. 提交并推送
+
+同事的插件下次打开设置页就会看到新版本提示。
+
 | 项目 | 值 |
 | ---- | -- |
 | 提供商路由 | `topdon`（显示名 "Topdon AI"） |
