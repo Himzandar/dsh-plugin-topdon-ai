@@ -17,7 +17,7 @@
  *             on the next usable key.
  * 5. ROUTE    `/plugins/dsh-plugin-topdon-ai/pool` backs the in-app cards.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,6 +47,8 @@ export const POOL_ROUTE = '/plugins/dsh-plugin-topdon-ai/pool'
 export const MODELS_ROUTE = '/plugins/dsh-plugin-topdon-ai/models'
 /** Route that checks for a newer version on GitHub. */
 export const UPDATE_ROUTE = '/plugins/dsh-plugin-topdon-ai/update-check'
+/** Route that downloads and installs the latest version from GitHub. */
+export const UPDATE_INSTALL_ROUTE = '/plugins/dsh-plugin-topdon-ai/do-update'
 
 /** GitHub raw URL — fallback when the contents API is unreachable. */
 const UPSTREAM_PKG_URL =
@@ -59,9 +61,12 @@ const UPSTREAM_PKG_URL =
  */
 const UPSTREAM_API_URL =
   'https://api.github.com/repos/Himzandar/dsh-plugin-topdon-ai/contents/package.json'
+
 /** How long to cache a successful update check (ms). */
 const UPDATE_CACHE_MS = 4 * 60 * 60 * 1000 // 4 h
 let _updateCache = { checkedAt: 0, result: undefined }
+/** Whether an install is currently in progress (prevents double-clicks). */
+let _installing = false
 
 const ENTRY_ID = 'llm-pi-ai'
 const RETRY = Symbol('topdon-ai-pool-retry')
@@ -526,14 +531,213 @@ async function checkForUpdate({ force = false } = {}) {
   if (typeof upstream !== 'string' || upstream.length === 0) {
     return { current: local, error: 'upstream package.json has no version' }
   }
-  const result = { current: local, latest: upstream, hasUpdate: upstream !== local }
+  // A plain `!==` would call a DOWNGRADE an update, and the Update button would
+  // then overwrite a local build with an older release. Compare the parts.
+  const result = { current: local, latest: upstream, hasUpdate: isNewer(upstream, local) }
   _updateCache = { checkedAt: now, result }
   return result
 }
 
+/**
+ * Semver-ish ordering for `a` newer than `b`.
+ *
+ * Only `major.minor.patch` with optional `-prerelease`/`+build` is needed here;
+ * a prerelease sorts BELOW its release (1.2.3-rc.1 < 1.2.3), and an unparsable
+ * side falls back to inequality so an unusual tag is still offered.
+ */
+export function isNewer(a, b) {
+  const parse = (text) => {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?/.exec(String(text).trim())
+    if (match === null) return undefined
+    return { parts: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] }
+  }
+  const left = parse(a)
+  const right = parse(b)
+  if (left === undefined || right === undefined) return a !== b
+  for (let index = 0; index < 3; index += 1) {
+    if (left.parts[index] !== right.parts[index]) return left.parts[index] > right.parts[index]
+  }
+  if (left.pre === right.pre) return false
+  if (left.pre === undefined) return true
+  if (right.pre === undefined) return false
+  return left.pre > right.pre
+}
+
+/**
+ * Pull the latest release from GitHub and apply it in place.
+ *
+ * WHY IN-PLACE AND NOT A RE-INSTALL
+ * ---------------------------------
+ * This plugin is installed into the profile as a LINK to its working copy, so
+ * the bytes the host loaded live in the same directory this module was loaded
+ * from. Writing the new files there is the whole update: a re-install through
+ * the package manager would move the profile back to a registry copy and lose
+ * that link, which is worse than not updating at all.
+ *
+ * WHAT IS PRESERVED
+ * -----------------
+ * `cordis.patch.yml` carries the user's model SELECTION, not just the catalog,
+ * and the settings card rewrites it on every save. A naive overwrite would
+ * silently re-enable every model the user had turned off. The incoming catalog
+ * and the current selection are therefore merged: the new file is generated
+ * from the NEW `providers.mjs`, narrowed to the models the user already had on.
+ *
+ * The client half is picked up by the host's bundle watch (HMR); the host half
+ * needs the entry to restart, which the caller triggers through `pluginManager`
+ * when it is reachable.
+ *
+ * @returns `{ ok, message, version?, reload? }`
+ */
+async function installUpdate(ctx) {
+  if (_installing) return { ok: false, message: '正在更新中，请稍候…' }
+  _installing = true
+  const require = createRequire(import.meta.url)
+  const local = require('./package.json').version
+  const installDir = dirname(fileURLToPath(import.meta.url))
+  const ua = `dsh-plugin-topdon-ai/${local}`
+  const rawHeaders = { 'User-Agent': ua }
+
+  /**
+   * Files that make up the plugin, per `files` in package.json plus the patch.
+   * The test scripts and build helpers are deliberately excluded: they are not
+   * shipped and a partial upstream set must not delete anything locally.
+   */
+  const UPDATABLE = new Set([
+    'index.js',
+    'client.js',
+    'providers.mjs',
+    'keypool.mjs',
+    'pool.mjs',
+    'patchgen.mjs',
+    'cordis.patch.yml',
+    'icon.svg',
+    'README.md',
+    'package.json',
+  ])
+
+  try {
+    const signal = AbortSignal.timeout?.(60_000)
+
+    /**
+     * Raw first, contents API only as a fallback.
+     *
+     * The anonymous contents API allows 60 requests per HOUR per address, and
+     * the settings card's update check already spends one each time it looks.
+     * Driving the whole download through it made a 403 about as likely as a
+     * successful update. `raw.githubusercontent.com` has no such budget for a
+     * public repo, and the file names are fixed by `package.json`, so the exact
+     * set can be fetched directly without a directory listing.
+     */
+    const UPSTREAM_RAW_ROOT = 'https://raw.githubusercontent.com/Himzandar/dsh-plugin-topdon-ai/main/'
+    const staged = new Map()
+
+    const fetchText = async (relative) => {
+      const res = await fetch(UPSTREAM_RAW_ROOT + relative, { headers: rawHeaders, signal })
+      if (!res.ok) throw new Error(`下载 ${relative} 失败：HTTP ${res.status}`)
+      return res.text()
+    }
+
+    for (const name of UPDATABLE) {
+      staged.set(name, await fetchText(name))
+    }
+    // Locale resources: fixed, small, and optional.
+    for (const name of ['locale/zh.json', 'locale/en.json']) {
+      try {
+        staged.set(name, await fetchText(name))
+      } catch {
+        // A release without locale files must not fail the update.
+      }
+    }
+    if (!staged.has('index.js') || !staged.has('package.json')) {
+      throw new Error('上游仓库缺少 index.js 或 package.json，已中止更新')
+    }
+
+    // Publish. The patch is handled last and separately, because it is the one
+    // file whose content is user state rather than upstream code.
+    for (const [name, text] of staged) {
+      if (name === 'cordis.patch.yml') continue
+      if (name.startsWith('locale/')) {
+        const dir = join(installDir, 'locale')
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, name.slice('locale/'.length)), text, 'utf8')
+      } else {
+        writeFileSync(join(installDir, name), text, 'utf8')
+      }
+    }
+
+    // Re-generate the patch from the NEW catalog, keeping the user's selection.
+    let kept = []
+    try {
+      const fresh = await import(`./providers.mjs?update=${Date.now()}`)
+      const known = fresh.MODEL_IDS ?? []
+      const before = currentSelection()
+      kept = before.filter((id) => known.includes(id))
+      // The generator lives in patchgen.mjs, not providers.mjs; reload it too so
+      // the emitted document matches the new catalog's shape.
+      const generator = await import(`./patchgen.mjs?update=${Date.now()}`)
+      let text
+      try {
+        text = generator.buildPatchText(kept.length > 0 ? kept : known)
+      } catch {
+        // buildPatchText reads providers.mjs through the SAME specifier this
+        // module already loaded, so an upstream shape change can surface here.
+        text = undefined
+      }
+      const wanted = kept.length > 0 ? kept : known
+      const generated = text ?? fresh.buildPatchText?.(wanted)
+      if (typeof generated !== 'string' || generated.length === 0) {
+        throw new Error('could not regenerate cordis.patch.yml')
+      }
+      writeFileSync(join(installDir, 'cordis.patch.yml'), generated, 'utf8')
+    } catch (patchError) {
+      // Keep whatever upstream shipped rather than leaving a stale local patch.
+      const shipped = staged.get('cordis.patch.yml')
+      if (shipped !== undefined) writeFileSync(join(installDir, 'cordis.patch.yml'), shipped, 'utf8')
+      ctx.logger?.warn?.(`topdon-ai: patch regeneration failed (${patchError}); used the upstream patch`)
+    }
+
+    _updateCache = { checkedAt: 0, result: undefined }
+
+    // Publish the new CLIENT bytes to open pages.
+    //
+    // `clientModules.rebuilt(id)` is the HMR hook: it re-reads this package's
+    // client bundle and bumps the graph rev, which is what makes an open page
+    // load the new `client.js` instead of the one it booted with. Re-installing
+    // through `pluginManager` is deliberately NOT used here — this plugin lives
+    // in the profile as a LINK to the directory being written, so the package
+    // manager would answer `already-installed` and change nothing.
+    let clientReloaded = false
+    try {
+      const modules = ctx.get?.('clientModules')
+      if (modules !== undefined && typeof modules.rebuilt === 'function') {
+        clientReloaded = modules.rebuilt('dsh-plugin-topdon-ai') !== undefined
+      }
+    } catch (reloadError) {
+      ctx.logger?.warn?.(`topdon-ai: could not publish the new client bundle: ${reloadError}`)
+    }
+
+    // The HOST half is the one that still needs a restart: this module's code is
+    // already in memory, and no loader API swaps a running entry's module. The
+    // message says so rather than pretending a refresh is enough.
+    const next = JSON.parse(staged.get('package.json')).version ?? '?'
+    return {
+      ok: true,
+      version: next,
+      clientReloaded,
+      message: clientReloaded
+        ? `已更新到 ${next}。页面稍后会自动加载新界面；网关本体要在重启 DSH 后生效。`
+        : `已更新到 ${next}。请刷新页面；网关本体要在重启 DSH 后生效。`,
+    }
+  } catch (error) {
+    ctx.logger?.warn?.(`topdon-ai: installUpdate failed: ${error}`)
+    return { ok: false, message: String(error?.message ?? error) }
+  } finally {
+    _installing = false
+  }
+}
+
 /** Register one exact-path JSON route on the host webserver. */
-function registerRoute(ctx, path, handler) {
-  ctx.inject(['webServer'], (child) => {
+function registerRoute(ctx, path, handler) {  ctx.inject(['webServer'], (child) => {
     child.effect(() =>
       child.webServer.register({
         kind: 'exact',
@@ -628,6 +832,12 @@ export function apply(ctx, config = {}) {
       // restarting the host.
       const force = /[?&]force=1\b/.test(req.url ?? '')
       return sendJson(res, 200, await checkForUpdate({ force }))
+    })
+
+    registerRoute(ctx, UPDATE_INSTALL_ROUTE, async (req, res) => {
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+      const result = await installUpdate(ctx)
+      return sendJson(res, result.ok ? 200 : 500, result)
     })
   }
 
