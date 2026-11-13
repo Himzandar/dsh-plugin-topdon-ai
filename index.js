@@ -483,9 +483,9 @@ export function applyPoolAction(store, body) {
  * Errors (network down, rate-limited, private repo) return `{ error }` and
  * the card shows nothing — a failed check is not surfaced as a warning.
  */
-async function checkForUpdate() {
+async function checkForUpdate({ force = false } = {}) {
   const now = Date.now()
-  if (_updateCache.result !== undefined && now - _updateCache.checkedAt < UPDATE_CACHE_MS) {
+  if (!force && _updateCache.result !== undefined && now - _updateCache.checkedAt < UPDATE_CACHE_MS) {
     return _updateCache.result
   }
   const require = createRequire(import.meta.url)
@@ -623,7 +623,11 @@ export function apply(ctx, config = {}) {
 
     registerRoute(ctx, UPDATE_ROUTE, async (req, res) => {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' })
-      return sendJson(res, 200, await checkForUpdate())
+      // `?force=1` skips the 4h cache. The settings card uses it for an explicit
+      // "check now", and it is what makes a just-pushed release visible without
+      // restarting the host.
+      const force = /[?&]force=1\b/.test(req.url ?? '')
+      return sendJson(res, 200, await checkForUpdate({ force }))
     })
   }
 
