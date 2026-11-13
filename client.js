@@ -11,6 +11,8 @@ window.__ModuleLoader__.load({
     /** Host routes registered by this plugin's host half. */
     const POOL_ROUTE = '/plugins/dsh-plugin-topdon-ai/pool'
     const MODELS_ROUTE = '/plugins/dsh-plugin-topdon-ai/models'
+    const UPDATE_ROUTE = '/plugins/dsh-plugin-topdon-ai/update-check'
+    const GITHUB_REPO = 'https://github.com/Himzandar/dsh-plugin-topdon-ai'
     /** Settings section id; the icon registration reuses it. */
     const SECTION_ID = 'topdon-ai'
     /** Row this plugin inserts; the Plugins page card targets it. */
@@ -65,6 +67,12 @@ window.__ModuleLoader__.load({
       'popup.empty': '还没有配置 Key，去设置里添加。',
       'popup.settings': '打开设置',
       'popup.since': '本次运行累计（重启后归零）',
+      'update.checking': '正在检查更新…',
+      'update.latest': '已是最新版本 {v}',
+      'update.available': '发现新版本 {latest}（当前 {current}）',
+      'update.how': '同事只需在插件页「更新」即可。',
+      'update.repo': '查看仓库',
+      'update.error': '检查更新失败',
       'modelsPage.failed': '没能自动打开设置，请手动进入 设置 → Topdon AI。',
     }
 
@@ -111,6 +119,12 @@ window.__ModuleLoader__.load({
       'popup.empty': 'No key configured yet — add one in Settings.',
       'popup.settings': 'Open settings',
       'popup.since': 'Since DSH started (resets on restart)',
+      'update.checking': 'Checking for updates…',
+      'update.latest': 'Up to date ({v})',
+      'update.available': 'New version {latest} available (current {current})',
+      'update.how': 'Colleagues can click Update in the Plugins page.',
+      'update.repo': 'View repo',
+      'update.error': 'Update check failed',
       'modelsPage.failed': 'Could not open Settings automatically — go to Settings → Topdon AI.',
     }
 
@@ -940,10 +954,84 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
       )
     }
 
+    // --- update check banner --------------------------------------------------
+    function UpdateBanner(props) {
+      const t = props?.t ?? ((key) => key)
+      const [status, setStatus] = react.useState('idle')   // idle | checking | up-to-date | update | error
+      const [info, setInfo] = react.useState(null)
+
+      react.useEffect(() => {
+        let alive = true
+        setStatus('checking')
+        request(UPDATE_ROUTE, 'GET')
+          .then((data) => {
+            if (!alive) return
+            if (data.error) { setStatus('error'); return }
+            setInfo(data)
+            setStatus(data.hasUpdate ? 'update' : 'up-to-date')
+          })
+          .catch(() => alive && setStatus('error'))
+        return () => { alive = false }
+      }, [])
+
+      const fill = (key, vars = {}) => {
+        let s = t(key)
+        for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v)
+        return s
+      }
+
+      const baseStyle = { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', marginTop: '4px' }
+
+      if (status === 'idle' || status === 'checking') {
+        return e('div', { style: { ...baseStyle, opacity: 0.5 } }, t('update.checking'))
+      }
+      if (status === 'error') {
+        return e('div', { style: { ...baseStyle, color: THEME.labelTertiary } }, t('update.error'))
+      }
+      if (status === 'up-to-date') {
+        return e('div', { style: { ...baseStyle, color: THEME.labelTertiary } },
+          fill('update.latest', { v: info.current }))
+      }
+      // status === 'update'
+      return e(
+        'div',
+        {
+          style: {
+            ...baseStyle,
+            flexWrap: 'wrap',
+            padding: '6px 10px',
+            borderRadius: '7px',
+            background: THEME.hover,
+            border: `1px solid ${THEME.accent}44`,
+            color: THEME.labelPrimary,
+          },
+        },
+        e('span', { style: { flex: '1 1 auto' } },
+          fill('update.available', { latest: info.latest, current: info.current }),
+          ' ',
+          e('span', { style: { color: THEME.labelTertiary } }, t('update.how')),
+        ),
+        e(
+          'a',
+          {
+            href: GITHUB_REPO,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            style: { color: THEME.accent, textDecoration: 'none', whiteSpace: 'nowrap' },
+          },
+          t('update.repo'),
+        ),
+      )
+    }
+
     function Card(props) {
       const t = props?.t ?? ((key) => key)
       try {
-        return e('div', { style: s.root }, e(ModelsPanel, { t }), e(KeysPanel, { t }))
+        return e('div', { style: s.root },
+          e(ModelsPanel, { t }),
+          e(KeysPanel, { t }),
+          e(UpdateBanner, { t }),
+        )
       } catch (error) {
         console.error('[dsh-plugin-topdon-ai] settings card failed:', error)
         return e('div', { style: s.error }, String(error?.message ?? error))
