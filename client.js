@@ -77,6 +77,7 @@ window.__ModuleLoader__.load({
       'update.recheck': '重新检查',
       'update.install': '立即更新',
       'update.installing': '更新中…',
+      'update.installer': '正在通过 DSH 安装器更新，页面将在几秒后自动刷新…',
       'update.installOk': '更新完成，请刷新页面后生效。',
       'update.installError': '更新失败：{msg}',
       'modelsPage.failed': '没能自动打开设置，请手动进入 设置 → Topdon AI。',
@@ -134,6 +135,7 @@ window.__ModuleLoader__.load({
       'update.recheck': 'Check again',
       'update.install': 'Update now',
       'update.installing': 'Updating…',
+      'update.installer': 'Updating through the DSH installer — the page will refresh in a few seconds…',
       'update.installOk': 'Updated — refresh the page to apply.',
       'update.installError': 'Update failed: {msg}',
       'modelsPage.failed': 'Could not open Settings automatically — go to Settings → Topdon AI.',
@@ -1025,6 +1027,15 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
           if (result.ok) {
             setInstallStatus('done')
             setInstallMsg(result.message || t('update.installOk'))
+            // The install replaces this plugin's own Host fibre, so the page is
+            // holding a module graph the server no longer serves. Reload once
+            // the package manager has had time to finish.
+            if (result.mode === 'installer') {
+              setInstallMsg(t('update.installer'))
+              try {
+                setTimeout(() => globalThis.location?.reload?.(), 9000)
+              } catch {}
+            }
           } else {
             setInstallStatus('error')
             setInstallMsg(fill('update.installError', { msg: result.message || '未知错误' }))
