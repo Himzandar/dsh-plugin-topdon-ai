@@ -73,6 +73,7 @@ window.__ModuleLoader__.load({
       'update.how': '同事只需在插件页「更新」即可。',
       'update.repo': '查看仓库',
       'update.error': '检查更新失败',
+      'update.recheck': '重新检查',
       'modelsPage.failed': '没能自动打开设置，请手动进入 设置 → Topdon AI。',
     }
 
@@ -125,6 +126,7 @@ window.__ModuleLoader__.load({
       'update.how': 'Colleagues can click Update in the Plugins page.',
       'update.repo': 'View repo',
       'update.error': 'Update check failed',
+      'update.recheck': 'Check again',
       'modelsPage.failed': 'Could not open Settings automatically — go to Settings → Topdon AI.',
     }
 
@@ -959,11 +961,14 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
       const t = props?.t ?? ((key) => key)
       const [status, setStatus] = react.useState('idle')   // idle | checking | up-to-date | update | error
       const [info, setInfo] = react.useState(null)
+      const [nonce, setNonce] = react.useState(0)
 
       react.useEffect(() => {
         let alive = true
         setStatus('checking')
-        request(UPDATE_ROUTE, 'GET')
+        // `force=1` bypasses the host's 4h cache; this runs on mount AND on an
+        // explicit re-check, so a freshly published version shows up at once.
+        request(UPDATE_ROUTE + '?force=1', 'GET')
           .then((data) => {
             if (!alive) return
             if (data.error) { setStatus('error'); return }
@@ -972,7 +977,7 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
           })
           .catch(() => alive && setStatus('error'))
         return () => { alive = false }
-      }, [])
+      }, [nonce])
 
       const fill = (key, vars = {}) => {
         let s = t(key)
@@ -981,16 +986,37 @@ li.jrmgQW_rowCard:has([data-topdon-ai-managed]) span.jrmgQW_rowActions {
       }
 
       const baseStyle = { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', marginTop: '4px' }
+      const recheck = (label) =>
+        e(
+          'button',
+          {
+            type: 'button',
+            onClick: () => setNonce((value) => value + 1),
+            style: {
+              appearance: 'none',
+              border: '0',
+              padding: '0 2px',
+              background: 'transparent',
+              color: THEME.accent,
+              font: 'inherit',
+              fontSize: '12px',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            },
+          },
+          label,
+        )
 
       if (status === 'idle' || status === 'checking') {
         return e('div', { style: { ...baseStyle, opacity: 0.5 } }, t('update.checking'))
       }
       if (status === 'error') {
-        return e('div', { style: { ...baseStyle, color: THEME.labelTertiary } }, t('update.error'))
+        return e('div', { style: { ...baseStyle, color: THEME.labelTertiary } },
+          t('update.error'), ' ', recheck(t('update.recheck')))
       }
       if (status === 'up-to-date') {
         return e('div', { style: { ...baseStyle, color: THEME.labelTertiary } },
-          fill('update.latest', { v: info.current }))
+          fill('update.latest', { v: info.current }), ' ', recheck(t('update.recheck')))
       }
       // status === 'update'
       return e(
