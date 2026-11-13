@@ -378,12 +378,20 @@ check('a rejected install reports the reason, not success', async () => {
   })
   // The handler catches the non-OK reply; it must not resolve as if it worked.
   await install.props.onClick()
+
   const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8')
-  // Success copy is only reachable on `result.ok`, and failure fills the reason.
+  // Success copy is reachable only inside the `result.ok` branch...
   assert.ok(
-    /if \(result\.ok\)[\s\S]{0,120}update\.installOk[\s\S]{0,200}update\.installError/.test(source),
-    'success copy must be gated on result.ok with the failure path filling a reason',
+    /if \(result\.ok\) \{[\s\S]{0,800}?update\.installOk/.test(source),
+    'success copy must be gated on result.ok',
   )
+  // ...and the rejected branch must fill a reason rather than claim success.
+  assert.ok(
+    /\} else \{[\s\S]{0,400}?update\.installError/.test(source),
+    'the rejected branch must report the failure reason',
+  )
+  // A thrown request fills the same reason path.
+  assert.match(source, /catch \(err\) \{[\s\S]{0,400}?update\.installError/)
 })
 
 let failed = 0
